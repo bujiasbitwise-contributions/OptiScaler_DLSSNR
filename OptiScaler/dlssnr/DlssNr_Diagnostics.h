@@ -120,8 +120,6 @@ inline const char* OpName(D3D12_AUTO_BREADCRUMB_OP op)
     case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "CopyBufferRegion";
     case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return "ResourceBarrier";
     case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return "ResolveQueryData";
-    case D3D12_AUTO_BREADCRUMB_OP_BEGINQUERY: return "BeginQuery";
-    case D3D12_AUTO_BREADCRUMB_OP_ENDQUERY: return "EndQuery";
     case D3D12_AUTO_BREADCRUMB_OP_EXECUTEMETACOMMAND: return "ExecuteMetaCommand";
     case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return "ExecuteIndirect";
     case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DrawInstanced";
