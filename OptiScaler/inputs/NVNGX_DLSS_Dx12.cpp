@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/DlssNr_Diagnostics.h>
 #include "Util.h"
 #include "Config.h"
 
@@ -1122,6 +1123,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     if (feature == NVSDK_NGX_Feature_FrameGeneration)
     {
+        DlssNr::Diagnostics::Record("native-FG-eval", InCmdList, nullptr, nullptr, nullptr, nullptr, handleId);
         evalWithoutFG = 0;
 
         int frameCount = 0;

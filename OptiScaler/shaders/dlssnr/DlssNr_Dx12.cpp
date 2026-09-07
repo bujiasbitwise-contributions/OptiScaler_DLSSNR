@@ -8,6 +8,7 @@
 #include <dlssnr/DlssNr_Capture.h>
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/DlssNr_ExposureScan.h>
+#include <dlssnr/DlssNr_Diagnostics.h>
 
 #include "DlssNr_Dx12.h"
 
@@ -661,6 +662,7 @@ void ParkNrFeature(void*& feature)
         return;
 
     NrRetired r;
+    DlssNr::Diagnostics::Record("park-feature", nullptr, feature);
     r.feature = feature;
     feature = nullptr;
     g_nrRetired.push_back(r);
@@ -672,6 +674,7 @@ void ParkNrResource(ID3D12Resource*& res)
         return;
 
     NrRetired r;
+    DlssNr::Diagnostics::Record("park-resource", nullptr, res);
     r.resource = res;
     res = nullptr;
     g_nrRetired.push_back(r);
@@ -688,10 +691,16 @@ void TickNrRetired()
         }
 
         if (g_nrRetired[i].feature != nullptr && g_nr.release != nullptr)
+        {
+            DlssNr::Diagnostics::Record("release-retired-feature", nullptr, g_nrRetired[i].feature);
             g_nr.release(g_nrRetired[i].feature);
+        }
 
         if (g_nrRetired[i].resource != nullptr)
+        {
+            DlssNr::Diagnostics::Record("release-retired-resource", nullptr, g_nrRetired[i].resource);
             g_nrRetired[i].resource->Release();
+        }
 
         g_nrRetired.erase(g_nrRetired.begin() + i);
     }
@@ -1062,7 +1071,7 @@ float ResolveWhitePoint(const Config& cfg, bool isHdrBuffer)
 }
 
 ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned int width,
-                              unsigned int height)
+                              unsigned int height, const wchar_t* role = L"scratch")
 {
     D3D12_HEAP_PROPERTIES heap {};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -1082,6 +1091,10 @@ ID3D12Resource* CreateScratch(ID3D12Device* device, DXGI_FORMAT format, unsigned
     ID3D12Resource* res = nullptr;
     device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res));
+    DlssNr::Diagnostics::Name(res, std::wstring(role) + L"/" + std::to_wstring(width) + L"x" +
+                                      std::to_wstring(height));
+    DlssNr::Diagnostics::Record("create-scratch", nullptr, res, nullptr, nullptr, nullptr,
+                                (UINT64(width) << 32) | height);
     return res;
 }
 
@@ -1143,6 +1156,8 @@ ID3D12Resource* CreateGuideClone(ID3D12Device* device, ID3D12Resource* source)
     ID3D12Resource* res = nullptr;
     device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
                                     nullptr, IID_PPV_ARGS(&res));
+    DlssNr::Diagnostics::Name(res, L"guide-clone/format-" + std::to_wstring((UINT) desc.Format));
+    DlssNr::Diagnostics::Record("create-guide-clone", nullptr, res, source);
     return res;
 }
 
@@ -1418,6 +1433,12 @@ DlssNr_Dx12::DlssNr_Dx12(std::string InName, ID3D12Device* InDevice)
     }
 
     _init = InitHeaps(InDevice, _frameHeaps, DLSSNR_NUM_OF_HEAPS);
+    for (uint32_t i = 0; i < DLSSNR_NUM_OF_HEAPS; ++i)
+    {
+        DlssNr::Diagnostics::Name(_constantBuffers[i], L"constants/slot-" + std::to_wstring(i));
+        DlssNr::Diagnostics::Name(_frameHeaps[i].GetHeapCSU(), L"descriptors/slot-" + std::to_wstring(i));
+    }
+    LOG_INFO("NR-DIAG dred-v1 NR composition initialized: heap slots={}", DLSSNR_NUM_OF_HEAPS);
 }
 
 bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
@@ -1430,6 +1451,9 @@ bool DlssNr_Dx12::DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssN
         return false;
 
     const uint32_t slot = _heapIndex;
+    DlssNr::Diagnostics::Record("record-pass (a=source b=model c=target d=constants; detail=mode:slot)",
+                                InCmdList, InSource, InModel, OutTarget, _constantBuffers[slot],
+                                (UINT64(InConstants.Mode) << 32) | slot);
     _heapIndex = (_heapIndex + 1) % DLSSNR_NUM_OF_HEAPS;
 
     FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
@@ -1503,6 +1527,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         return;
     }
 
+    DlssNr::Diagnostics::Record("NR-dispatch (a=output b=depth c=motion)", cmdList, output, depth, motion);
     ID3D12Resource* target = output;
 
     // The state the upscaler left the output in. Every upscaler in this tree ends Evaluate by moving
@@ -1523,6 +1548,13 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     if (FAILED(target->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr)
     {
         ReportSkipOnce("the output texture belongs to no D3D12 device");
+        return;
+    }
+
+    if (FAILED(device->GetDeviceRemovedReason()))
+    {
+        DlssNr::Diagnostics::DumpDeviceLoss(device);
+        device->Release();
         return;
     }
 
@@ -1693,23 +1725,23 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     if (g_nr.output == nullptr)
     {
-        g_nr.output = CreateScratch(device, desc.Format, workWidth, workHeight);
-        g_nr.colorCopy = CreateScratch(device, desc.Format, width, height);
-        g_nr.hdrCopy = CreateScratch(device, desc.Format, width, height);
+        g_nr.output = CreateScratch(device, desc.Format, workWidth, workHeight, L"model-output");
+        g_nr.colorCopy = CreateScratch(device, desc.Format, width, height, L"encoded-color");
+        g_nr.hdrCopy = CreateScratch(device, desc.Format, width, height, L"original-hdr");
         g_nr.workWidth = workWidth;
         g_nr.workHeight = workHeight;
     }
 
     if (reduced && g_nr.colorSmall == nullptr)
-        g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight);
+        g_nr.colorSmall = CreateScratch(device, desc.Format, workWidth, workHeight, L"scaled-color");
 
     // The down-leg target is native (the answer is brought back to frame size before the resolve).
     if (workScale > 1.0f && g_nr.outputNative == nullptr)
-        g_nr.outputNative = CreateScratch(device, desc.Format, width, height);
+        g_nr.outputNative = CreateScratch(device, desc.Format, width, height, L"native-model-output");
 
     if (g_nr.meter == nullptr)
     {
-        g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid);
+        g_nr.meter = CreateScratch(device, DXGI_FORMAT_R32_FLOAT, kDlssNrMeterGrid, kDlssNrMeterGrid, L"exposure-meter");
 
         D3D12_HEAP_PROPERTIES readback {};
         readback.Type = D3D12_HEAP_TYPE_READBACK;
@@ -1758,6 +1790,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         }
 
         SetExtras(cfg, nullptr, nullptr, 0, 0, 0, 0);
+        DlssNr::Diagnostics::Record("NGX-create-begin", cmdList);
         g_nr.feature =
             g_nr.create(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
                         device, cmdList, g_nr.capabilityParams, workWidth, workHeight,
@@ -1770,6 +1803,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                         // is nothing for it to correct.
                         1);
 
+        DlssNr::Diagnostics::Record("NGX-create-end", cmdList, g_nr.feature);
         if (g_nr.feature == nullptr)
         {
             g_nr.failed = true;
@@ -1890,10 +1924,16 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     ScopedNrStateEnvelope stateEnvelope(cmdList);
 
     if (g_gpuTime == nullptr)
+    {
         g_gpuTime = std::make_unique<GpuTime_Dx12>(device);
+        g_gpuTime->SetDiagnosticName(L"DLSS-NR/total-timing");
+    }
 
     if (g_ngxTime == nullptr)
+    {
         g_ngxTime = std::make_unique<GpuTime_Dx12>(device);
+        g_ngxTime->SetDiagnosticName(L"DLSS-NR/model-timing");
+    }
 
     if (g_gpuTime != nullptr)
         g_gpuTime->Start(cmdList);
@@ -1987,7 +2027,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
                 if (g_nr.heldColor != nullptr)
                     ParkNrResource(g_nr.heldColor);
 
-                g_nr.heldColor = CreateScratch(device, td.Format, (unsigned int) td.Width, td.Height);
+                g_nr.heldColor = CreateScratch(device, td.Format, (unsigned int) td.Width, td.Height, L"held-color");
 
                 if (g_nr.heldColor != nullptr)
                 {
@@ -2185,6 +2225,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
 
     // Multi-pass was removed: re-feeding the model its own output re-opened the same-command-list
     // feature-creation hang, and the colour core is not settled enough to build on. One evaluate.
+    DlssNr::Diagnostics::Record("NGX-eval-begin (a=input b=depth c=motion d=output)", cmdList,
+                                modelInput, depthIn, motionIn, g_nr.output);
     const int result = g_nr.evaluate(
         cmdList, g_nr.feature, g_nr.capabilityParams, modelInput, depthIn, motionIn, g_nr.output,
         workWidth, workHeight, guideWidth, guideHeight, g_nr.guideDepthInverted ? 1 : 0,
@@ -2194,6 +2236,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
         cfg.DlssNrAutoMask.value_or_default() ? 1 : 0, g_nr.guideMvScaleX * mvToWork,
         g_nr.guideMvScaleY * mvToWork);
 
+    DlssNr::Diagnostics::Record("NGX-eval-end", cmdList, g_nr.feature, nullptr, nullptr, nullptr,
+                                (UINT) result);
     if (g_ngxTime != nullptr)
         g_ngxTime->End(cmdList);
 

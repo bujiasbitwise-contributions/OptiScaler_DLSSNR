@@ -1,0 +1,37 @@
+name: NR GPU Fault Diagnostic
+
+on:
+  push:
+    branches: ["diagnostic/nr-dred"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    environment: Build
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build Release
+        run: msbuild /m /p:Configuration=Release . /verbosity:minimal
+      - name: Package diagnostic
+        shell: pwsh
+        run: |
+          $output = Join-Path $env:GITHUB_WORKSPACE 'x64\Release\a'
+          Copy-Item 'docs\diagnostics\nr-dred.md' "$output\NR-DIAGNOSTIC.md"
+          "NR-DIAG dred-v1`nCommit: $env:GITHUB_SHA`nBranch: $env:GITHUB_REF_NAME" | Set-Content "$output\NR-DIAGNOSTIC-BUILD.txt"
+          Copy-Item 'x64\Release\*.pdb' $output -ErrorAction SilentlyContinue
+          7z a NR-GPU-Fault-Diagnostic.7z "$output\*"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7.0.0
+        with:
+          name: NR-GPU-Fault-Diagnostic
+          path: NR-GPU-Fault-Diagnostic.7z
+          archive: false
+          compression-level: 0
+          if-no-files-found: error

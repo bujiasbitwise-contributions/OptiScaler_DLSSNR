@@ -17,6 +17,14 @@ class GpuTime_Dx12
     GpuTime_Dx12(ID3D12Device* device);
     ~GpuTime_Dx12();
 
+    void SetDiagnosticName(const wchar_t* name)
+    {
+        if (_queryHeap != nullptr)
+            _queryHeap->SetName(name);
+        if (_readbackBuffer != nullptr)
+            _readbackBuffer->SetName(name);
+    }
+
     void Start(ID3D12GraphicsCommandList* cmdList);
     void End(ID3D12GraphicsCommandList* cmdList);
 

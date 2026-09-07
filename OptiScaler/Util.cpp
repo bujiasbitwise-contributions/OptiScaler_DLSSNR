@@ -2,6 +2,7 @@
 
 #include "Util.h"
 #include "Config.h"
+#include <dlssnr/DlssNr_Diagnostics.h>
 
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
@@ -723,6 +724,7 @@ void Util::GetDeviceRemovedReason(ID3D11Device* pDevice)
 
 void Util::GetDeviceRemovedReason(ID3D12Device* pDevice)
 {
+    DlssNr::Diagnostics::DumpDeviceLoss(pDevice);
     auto reason = pDevice->GetDeviceRemovedReason();
 
     switch (reason)
